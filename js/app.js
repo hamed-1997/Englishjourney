@@ -43,7 +43,8 @@ function defaultState() {
       puterConnected: false,
       model: "gpt-4o-mini"
     },
-    victorChat: []            // {role: "user"|"victor", content}
+    victorChat: [],            // {role: "user"|"victor", content}
+    vocabulary: []             // {id, term, meaning, example, day, stage, addedDate, reviewStage, nextReviewDate}
   };
 }
 
@@ -143,19 +144,26 @@ function youtubeSearchResource(dayData, type) {
   return {
     title: "YouTube",
     link: `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`,
-    note: `Search results for "${dayData.topic}" — pick any short, clear video.`
+    note: `Search results for "${dayData.topic}" — pick any short, clear video.`,
+    query: q
   };
 }
 
 // Every step gets AT LEAST two concrete options: one curated site (rotates so
 // consecutive days vary) plus a YouTube search built from today's actual topic.
 // Listening also gets a verified Castbox podcast link as a third option.
+// Every resource also carries a plain-text `query` — copyable, so it can be
+// pasted into an app's own search bar (e.g. Castbox) even when we don't have
+// a working deep-search link for that app.
 function pickResources(type, dayData) {
   const list = RESOURCE_LIBRARY[type];
   const options = [];
-  if (list && list.length) options.push(list[dayData.day % list.length]);
+  if (list && list.length) {
+    const curated = list[dayData.day % list.length];
+    options.push({ ...curated, query: `${dayData.topic}` });
+  }
   options.push(youtubeSearchResource(dayData, type));
-  if (type === "Listening") options.push(CASTBOX_RESOURCE);
+  if (type === "Listening") options.push({ ...CASTBOX_RESOURCE, query: `${dayData.topic} English` });
   return options;
 }
 
@@ -164,15 +172,29 @@ function resourceStepBoxHTML(resources) {
   return `
     <div class="step-box">
       <div class="label">Choose a resource</div>
-      ${resources.map(r => `
+      ${resources.map((r, i) => `
         <div class="resource-row">
           <div class="resource-row-text">
             <div class="rname">${r.title}</div>
             <div class="rnote small muted">${r.note}</div>
           </div>
-          <a href="${r.link}" target="_blank" rel="noopener" class="btn btn-secondary resource-open-btn">Open</a>
+          <div class="resource-row-btns">
+            ${r.query ? `<button class="btn btn-outline resource-copy-btn" data-query="${escapeHTML(r.query)}">Copy</button>` : ""}
+            <a href="${r.link}" target="_blank" rel="noopener" class="btn btn-secondary resource-open-btn">Open</a>
+          </div>
         </div>`).join("")}
     </div>`;
+}
+
+function wireResourceCopyButtons(container) {
+  container.querySelectorAll(".resource-copy-btn").forEach(btn => {
+    btn.onclick = () => {
+      navigator.clipboard?.writeText(btn.dataset.query);
+      const original = btn.textContent;
+      btn.textContent = "Copied ✓";
+      setTimeout(() => { btn.textContent = original; }, 1300);
+    };
+  });
 }
 
 // Activity presentation metadata
@@ -189,38 +211,46 @@ const ACTIVITY_META = {
 // Build the concrete Steps for a given day from its fixed curriculum metadata.
 // The curriculum (topic/grammar/goal) never changes — this function only decides
 // HOW to practice it today, per the "Activity Selection Rules" principle.
+// Order is deliberate: review due words → learn today's words → THEN practice
+// (listening/speaking/etc.) — so the learner always knows the vocabulary before
+// being asked to use it, not the other way around.
 function buildSteps(dayData) {
   if (dayData.isCheckpoint) return buildCheckpointSteps(dayData);
   const steps = [];
   const skills = [...dayData.primarySkills, ...dayData.secondarySkills];
 
-  // Recall warm-up — a cheap, code-only spaced-repetition nudge. Not a new
-  // content type, just a 5-minute look-back at yesterday's topic before
-  // today's new material, so nothing gets learned once and forgotten.
-  const prevDay = getDayData(dayData.day - 1);
-  if (prevDay && !prevDay.isCheckpoint && !dayData.isCheckpoint && dayData.day > 1) {
+  // 1) Review due words — real spaced repetition over the learner's own saved
+  // vocabulary (see VOCAB_INTERVALS_DAYS), not a vague "recall yesterday" nudge.
+  const dueWords = getDueVocab();
+  if (dayData.day > 1) {
     steps.push({
       id: "recall",
-      type: "Vocabulary",
+      type: "Review",
       duration: "5 min",
-      instructions: `Quick recall — before starting today, say 2–3 sentences out loud about yesterday's topic: "${prevDay.topic}". This costs 5 minutes and makes it stick.`,
+      isRecall: true,
+      dueWords,
+      instructions: dueWords.length
+        ? `${dueWords.length} word${dueWords.length > 1 ? "s" : ""} are due for review. Use each one in a new sentence, out loud.`
+        : `Quick warm-up — say 2–3 sentences out loud about yesterday's topic before starting today.`,
       promptToCopy: null,
       resource: null
     });
   }
 
+  // 2) Today's vocabulary, generated (via Victor/Puter) or shown as guidance if
+  // AI isn't connected — always BEFORE the practice activities below.
+  steps.push({
+    id: "vocab-intro",
+    type: "Vocabulary",
+    duration: "10 min",
+    isVocabIntro: true,
+    instructions: `Learn the key words for "${dayData.topic}" before practicing with them below.`,
+    promptToCopy: null,
+    resource: pickResources("Vocabulary", dayData)
+  });
+
   skills.forEach((skill) => {
-    if (skill === "Vocabulary") {
-      steps.push({
-        id: "vocab",
-        type: "Vocabulary",
-        duration: "10 min",
-        instructions: `Learn a few useful expressions related to "${dayData.topic}". Say each one out loud, then use two of them in your own sentences.`,
-        promptToCopy: null,
-        resource: pickResources("Vocabulary", dayData)
-      });
-      return;
-    }
+    if (skill === "Vocabulary") return; // handled above, always first
     if (skill === "Listening") {
       steps.push({
         id: "listening",
@@ -291,8 +321,8 @@ function buildSteps(dayData) {
     // "Pronunciation" / "Problem Solving" fold into the adjacent Speaking step — no standalone step.
   });
 
-  // Ensure at least one step exists
-  if (steps.length === 1 && steps[0].id === "recall") {
+  // Ensure at least one practice activity exists beyond recall/vocab-intro
+  if (steps.every(s => s.isRecall || s.isVocabIntro)) {
     steps.push({
       id: "speaking",
       type: "Speaking",
@@ -589,59 +619,175 @@ function openSessionRunner(dayData, steps) {
 
   const el = document.getElementById("view-today");
 
-  function render() {
-    const step = steps[idx];
-    const meta = ACTIVITY_META[step.type] || { icon: "•" };
-    const dots = steps.map((s, i) => {
+  function stepDotsHTML(step) {
+    return steps.map((s, i) => {
       const cls = i < state.completedStepsToday.length ? "done" : (i === idx ? "current" : "");
       return `<div class="step-dot ${cls}"></div>`;
     }).join("");
+  }
 
-    el.innerHTML = `
-      <div class="card">
-        <div class="step-progress">${dots}</div>
-        <div class="step-icon-badge">${meta.icon}</div>
-        <div class="step-title">${step.type}</div>
-        <div class="step-duration">${step.duration} · Day ${dayData.day}</div>
-        <div class="step-instructions">${step.instructions}</div>
-        ${resourceStepBoxHTML(step.resource)}
-        ${step.externalNote ? `<div class="small" style="color:var(--primary); font-weight:600; margin:-6px 0 12px;">${step.externalNote}</div>` : ""}
-        ${step.promptToCopy ? `
-          <div class="step-box">
-            <div class="label">AI conversation prompt</div>
-            ${step.promptToCopy}
-            <div class="copy-row">
-              <button class="btn btn-secondary" id="btn-copy-prompt">Copy Prompt</button>
-            </div>
-          </div>` : ""}
-        <button class="btn btn-primary mt16" id="btn-complete-step">Complete</button>
-        <button class="btn btn-outline mt8" id="btn-exit-session">Back to Today</button>
-      </div>`;
-
-    const copyBtn = document.getElementById("btn-copy-prompt");
-    if (copyBtn) copyBtn.onclick = () => {
-      navigator.clipboard?.writeText(step.promptToCopy);
-      copyBtn.textContent = "Copied ✓";
-      setTimeout(() => { copyBtn.textContent = "Copy Prompt"; }, 1500);
-    };
-
-    document.getElementById("btn-exit-session").onclick = () => renderToday();
-    document.getElementById("btn-complete-step").onclick = () => {
-      if (!state.completedStepsToday.includes(step.id)) {
-        state.completedStepsToday.push(step.id);
-        saveState();
+  function completeCurrentStep() {
+    const step = steps[idx];
+    if (!state.completedStepsToday.includes(step.id)) {
+      state.completedStepsToday.push(step.id);
+      saveState();
+    }
+    const isLastStep = idx >= steps.length - 1;
+    showSuccessAnimation(() => {
+      if (!isLastStep) {
+        idx += 1;
+        render();
+      } else {
+        completeDay(dayData.day);
+        renderToday();
       }
-      const isLastStep = idx >= steps.length - 1;
-      showSuccessAnimation(() => {
-        if (!isLastStep) {
-          idx += 1;
-          render();
-        } else {
-          completeDay(dayData.day);
-          renderToday();
-        }
-      }, isLastStep);
-    };
+    }, isLastStep);
+  }
+
+  function render() {
+    const step = steps[idx];
+    if (step.isVocabIntro) return renderVocabStep();
+    if (step.isRecall) return renderRecallStep();
+    renderGenericStep();
+
+    function renderGenericStep() {
+      const meta = ACTIVITY_META[step.type] || { icon: "•" };
+      el.innerHTML = `
+        <div class="card">
+          <div class="step-progress">${stepDotsHTML(step)}</div>
+          <div class="step-icon-badge">${meta.icon}</div>
+          <div class="step-title">${step.type}</div>
+          <div class="step-duration">${step.duration} · Day ${dayData.day}</div>
+          <div class="step-instructions">${step.instructions}</div>
+          ${resourceStepBoxHTML(step.resource)}
+          ${step.externalNote ? `<div class="small" style="color:var(--primary); font-weight:600; margin:-6px 0 12px;">${step.externalNote}</div>` : ""}
+          ${step.promptToCopy ? `
+            <div class="step-box">
+              <div class="label">AI conversation prompt</div>
+              ${step.promptToCopy}
+              <div class="copy-row">
+                <button class="btn btn-secondary" id="btn-copy-prompt">Copy Prompt</button>
+              </div>
+            </div>` : ""}
+          <button class="btn btn-primary mt16" id="btn-complete-step">Complete</button>
+          <button class="btn btn-outline mt8" id="btn-exit-session">Back to Today</button>
+        </div>`;
+
+      const copyBtn = document.getElementById("btn-copy-prompt");
+      if (copyBtn) copyBtn.onclick = () => {
+        navigator.clipboard?.writeText(step.promptToCopy);
+        copyBtn.textContent = "Copied ✓";
+        setTimeout(() => { copyBtn.textContent = "Copy Prompt"; }, 1500);
+      };
+      wireResourceCopyButtons(el);
+      document.getElementById("btn-exit-session").onclick = () => renderToday();
+      document.getElementById("btn-complete-step").onclick = completeCurrentStep;
+    }
+
+    function renderVocabStep() {
+      const meta = ACTIVITY_META[step.type] || { icon: "📚" };
+      const connected = !!state.settings.puterConnected;
+      let bodyHTML;
+
+      if (!connected) {
+        bodyHTML = `
+          <div class="step-instructions">${step.instructions}</div>
+          ${resourceStepBoxHTML(step.resource)}
+          <div class="small muted" style="margin-top:-4px;">Connect Puter in Settings and Victor will generate today's word list here automatically.</div>`;
+      } else if (step._error) {
+        bodyHTML = `
+          <div class="step-instructions">Couldn't generate the list this time.</div>
+          <div class="small" style="color:#DC2626; margin:6px 0 12px;">${step._error}</div>
+          <button class="btn btn-secondary" id="btn-retry-vocab">Try again</button>`;
+      } else if (step._words) {
+        bodyHTML = `
+          <div class="step-instructions">${step.instructions}</div>
+          <div class="vocab-list">
+            ${step._words.map((w, i) => `
+              <label class="vocab-card">
+                <input type="checkbox" checked data-vi="${i}">
+                <div>
+                  <div class="vterm">${w.term}</div>
+                  <div class="vmeaning small muted">${w.meaning}</div>
+                  <div class="vexample small">"${w.example}"</div>
+                </div>
+              </label>`).join("")}
+          </div>
+          <button class="btn btn-secondary mt8" id="btn-save-vocab">${step._saved ? "Saved to My Vocabulary ✓" : "Save selected to My Vocabulary"}</button>`;
+      } else {
+        bodyHTML = `
+          <div class="step-instructions">Victor is putting together today's words…</div>
+          <div class="chat-bubble victor typing" style="margin:10px 0 4px;"><span></span><span></span><span></span></div>`;
+      }
+
+      el.innerHTML = `
+        <div class="card">
+          <div class="step-progress">${stepDotsHTML(step)}</div>
+          <div class="step-icon-badge">${meta.icon}</div>
+          <div class="step-title">Today's Words</div>
+          <div class="step-duration">${step.duration} · Day ${dayData.day}</div>
+          ${bodyHTML}
+          <button class="btn btn-primary mt16" id="btn-complete-step">Complete</button>
+          <button class="btn btn-outline mt8" id="btn-exit-session">Back to Today</button>
+        </div>`;
+
+      document.getElementById("btn-exit-session").onclick = () => renderToday();
+      document.getElementById("btn-complete-step").onclick = completeCurrentStep;
+      wireResourceCopyButtons(el);
+
+      const retryBtn = document.getElementById("btn-retry-vocab");
+      if (retryBtn) retryBtn.onclick = () => { step._error = null; step._fetchStarted = false; renderVocabStep(); };
+
+      const saveBtn = document.getElementById("btn-save-vocab");
+      if (saveBtn) saveBtn.onclick = () => {
+        const chosen = Array.from(el.querySelectorAll("[data-vi]"))
+          .filter(cb => cb.checked)
+          .map(cb => step._words[Number(cb.dataset.vi)]);
+        saveVocabWords(chosen, dayData);
+        step._saved = true;
+        renderVocabStep();
+      };
+
+      if (connected && !step._words && !step._error && !step._fetchStarted) {
+        step._fetchStarted = true;
+        generateVocabForDay(dayData)
+          .then(words => { step._words = words; renderVocabStep(); })
+          .catch(() => { step._error = "Selected model is unavailable. Please choose another model in Settings."; renderVocabStep(); });
+      }
+    }
+
+    function renderRecallStep() {
+      const meta = { icon: "🔁" };
+      const dueWords = step.dueWords || [];
+      const bodyHTML = dueWords.length ? `
+        <div class="step-instructions">${step.instructions}</div>
+        <div class="vocab-list">
+          ${dueWords.map(w => `
+            <div class="vocab-card static">
+              <div>
+                <div class="vterm">${w.term}</div>
+                <div class="vmeaning small muted">${w.meaning}</div>
+              </div>
+            </div>`).join("")}
+        </div>` : `<div class="step-instructions">${step.instructions}</div>`;
+
+      el.innerHTML = `
+        <div class="card">
+          <div class="step-progress">${stepDotsHTML(step)}</div>
+          <div class="step-icon-badge">${meta.icon}</div>
+          <div class="step-title">Review</div>
+          <div class="step-duration">${step.duration} · Day ${dayData.day}</div>
+          ${bodyHTML}
+          <button class="btn btn-primary mt16" id="btn-complete-step">Complete</button>
+          <button class="btn btn-outline mt8" id="btn-exit-session">Back to Today</button>
+        </div>`;
+
+      document.getElementById("btn-exit-session").onclick = () => renderToday();
+      document.getElementById("btn-complete-step").onclick = () => {
+        dueWords.forEach(w => markVocabReviewed(w.id));
+        completeCurrentStep();
+      };
+    }
   }
   render();
 }
@@ -1124,6 +1270,66 @@ async function testPuterConnection() {
   } catch (e) {
     alert("Could not reach Puter. Please try again.");
   }
+}
+
+// ---------------------------------------------------------------
+// Vocabulary — AI-generated word lists + lightweight spaced repetition
+// ---------------------------------------------------------------
+const VOCAB_INTERVALS_DAYS = [1, 3, 7, 16, 35]; // days until next review, by reviewStage
+
+function addDaysISO(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function getDueVocab() {
+  const today = todayISO();
+  return state.vocabulary.filter(v => v.nextReviewDate && v.nextReviewDate <= today).slice(0, 6);
+}
+
+function markVocabReviewed(id) {
+  const word = state.vocabulary.find(v => v.id === id);
+  if (!word) return;
+  word.reviewStage = Math.min(word.reviewStage + 1, VOCAB_INTERVALS_DAYS.length - 1);
+  word.nextReviewDate = addDaysISO(VOCAB_INTERVALS_DAYS[word.reviewStage]);
+  saveState();
+}
+
+function saveVocabWords(words, dayData) {
+  words.forEach(w => {
+    state.vocabulary.push({
+      id: "v" + Date.now() + Math.random().toString(36).slice(2, 7),
+      term: w.term,
+      meaning: w.meaning,
+      example: w.example,
+      day: dayData.day,
+      stage: dayData.stage,
+      addedDate: todayISO(),
+      reviewStage: 0,
+      nextReviewDate: addDaysISO(VOCAB_INTERVALS_DAYS[0])
+    });
+  });
+  saveState();
+}
+
+// Generates today's word list via Puter — a small, focused call (today's topic
+// only, per Token Optimization), returning strict JSON so the UI can render it
+// as real cards instead of a wall of text.
+async function generateVocabForDay(dayData) {
+  const prompt =
+`Give 6 useful English words or short phrases for a ${dayData.cefr}-level learner, for the topic "${dayData.topic}" (grammar in focus: ${dayData.grammarFocus}).
+Respond ONLY with strict JSON, no markdown, no commentary, in this exact shape:
+[{"term":"...","meaning":"short simple definition","example":"one short example sentence"}]`;
+
+  const result = await window.puter.ai.chat(prompt, { model: state.settings.model });
+  let text = typeof result === "string" ? result
+    : Array.isArray(result?.message?.content) ? result.message.content.map(c => c.text || "").join(" ")
+    : result?.message?.content || "";
+  text = text.trim().replace(/^```json\s*|^```\s*|```$/g, "");
+  const parsed = JSON.parse(text);
+  if (!Array.isArray(parsed)) throw new Error("Unexpected response shape");
+  return parsed.slice(0, 8);
 }
 
 // Ask Victor — sends ONLY the current day's data, never the full 180-day curriculum
