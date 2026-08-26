@@ -1,4 +1,4 @@
-const CACHE = "english-journey-v1";
+const CACHE = "english-journey-v2";
 const ASSETS = [
   "./",
   "./index.html",
@@ -25,15 +25,17 @@ self.addEventListener("activate", (e) => {
   self.clients.claim();
 });
 
+// Network-first: always try to fetch the latest file first, so a new deploy
+// shows up immediately. Only fall back to the cached copy when offline.
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
   e.respondWith(
-    caches.match(e.request).then(cached => {
-      return cached || fetch(e.request).then(res => {
+    fetch(e.request)
+      .then(res => {
         const resClone = res.clone();
         caches.open(CACHE).then(cache => cache.put(e.request, resClone));
         return res;
-      }).catch(() => cached);
-    })
+      })
+      .catch(() => caches.match(e.request))
   );
 });
