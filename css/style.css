@@ -53,14 +53,73 @@ a { color: inherit; text-decoration: none; }
 /* ---------------- Splash ---------------- */
 #splash {
   position: fixed; inset: 0; z-index: 999;
-  background: linear-gradient(160deg, var(--teal-dark), var(--teal-deep));
-  display: flex; align-items: center; justify-content: center; flex-direction: column;
+  background: radial-gradient(120% 90% at 50% 35%, #FFFFFF, var(--bg));
+  display: flex; align-items: center; justify-content: center;
   transition: opacity 0.5s ease, visibility 0.5s;
 }
-#splash img { width: 96px; height: 96px; border-radius: 26px; box-shadow: 0 20px 50px -14px rgba(0,0,0,0.5); animation: splashIn 0.7s cubic-bezier(.2,.8,.2,1); }
-#splash .splash-word { color: white; font-weight: 800; font-size: 15px; letter-spacing: 0.08em; margin-top: 18px; opacity: 0.92; }
 #splash.hide { opacity: 0; visibility: hidden; pointer-events: none; }
-@keyframes splashIn { from { opacity: 0; transform: scale(0.85) translateY(10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+
+.splash-lockup, #splash .lockup { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+
+/* Outer viewports reserve the actual VISUAL (scaled) box in the layout; the
+   inner *-scale-inner divs stay at native pixel size so the road-path and
+   plane-position math below keeps working in simple native coordinates. */
+#splash .icon-viewport { width: 184.76px; height: 219.48px; position: relative; }
+#splash .icon-scale-inner { width: 298px; height: 354px; transform: scale(0.62); transform-origin: top left; position: absolute; top: 0; left: 0; }
+#splash .text-viewport { width: 353.4px; height: 185.38px; position: relative; }
+#splash .text-scale-inner { width: 570px; height: 299px; transform: scale(0.62); transform-origin: top left; position: absolute; top: 0; left: 0; }
+
+.splash-icon-wrap {
+  position: relative; width: 298px; height: 354px;
+  opacity: 0; transform: scale(0.86);
+  filter: drop-shadow(0 14px 26px rgba(6,59,60,0.18));
+}
+.splash-icon-wrap.show { animation: splashIconIn 0.5s cubic-bezier(.2,.9,.3,1.05) forwards; }
+@keyframes splashIconIn { to { opacity: 1; transform: scale(1); } }
+.splash-icon-base { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+/* Glow dot — travels the traced road path from the icon artwork. Being a soft
+   blurred dot rather than a rigid shape, tiny imprecision in the path never
+   reads as sloppy the way it would on a rigid element. */
+.splash-glow {
+  position: absolute; top: 0; left: 0;
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--primary-2);
+  box-shadow: 0 0 10px 3px rgba(20,196,182,0.75), 0 0 2px 1px #fff;
+  opacity: 0;
+  offset-path: path("M 221.0,320.2 C 199.6,316.7 119.1,305.8 92.7,299.1 C 66.2,292.4 69.7,287.0 62.3,280.2 C 55.0,273.5 51.4,265.2 48.5,258.4 C 45.6,251.7 45.7,246.4 44.9,239.7 C 44.0,232.9 42.4,225.2 43.1,217.9 C 43.8,210.7 45.2,202.8 49.0,196.1 C 52.9,189.4 58.4,184.2 66.1,177.5 C 73.8,170.8 84.8,162.5 95.2,155.8 C 105.7,149.1 117.8,143.9 128.7,137.1 C 139.5,130.4 150.8,122.1 160.1,115.3 C 169.3,108.6 175.3,103.3 184.0,96.7 C 192.7,90.1 207.3,79.3 212.0,75.8");
+  offset-distance: 0%;
+  offset-rotate: 0deg;
+}
+.splash-glow.travel { animation: splashGlowTravel 0.9s cubic-bezier(.4,.05,.25,1) forwards; }
+@keyframes splashGlowTravel {
+  0%   { offset-distance: 0%;   opacity: 0; }
+  8%   { opacity: 1; }
+  88%  { opacity: 1; }
+  100% { offset-distance: 100%; opacity: 0; }
+}
+
+/* Plane — launches from where the road ends, a short clean hop into its real
+   resting spot (taken from the source artwork), no path-following needed. */
+.splash-plane {
+  position: absolute;
+  left: 188px; top: 2px; width: 107px;
+  opacity: 0;
+  filter: drop-shadow(0 6px 10px rgba(6,59,60,0.45));
+  transform: translate(-29.5px, 24.3px) scale(0.5);
+}
+.splash-plane.launch { animation: splashPlaneLaunch 0.55s cubic-bezier(.25,.4,.3,1.15) forwards; }
+@keyframes splashPlaneLaunch {
+  0%   { transform: translate(-29.5px, 24.3px) scale(0.5); opacity: 0; }
+  20%  { opacity: 1; }
+  70%  { transform: translate(3px, -3px) scale(1.05); opacity: 1; }
+  100% { transform: translate(0,0) scale(1); opacity: 1; }
+}
+
+.splash-text-img { width: 100%; display: block; }
+.splash-text-wrap { width: 570px; opacity: 0; transform: translateY(-10px); }
+.splash-text-wrap.show { animation: splashTextIn 0.5s cubic-bezier(.2,.8,.3,1) forwards; }
+@keyframes splashTextIn { to { opacity: 1; transform: translateY(0); } }
 
 /* ---------------- Header ---------------- */
 .app-header {
